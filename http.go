@@ -3,9 +3,10 @@ package main
 import (
 	"strconv"
 
+	"net/http"
+
 	"github.com/gin-gonic/gin"
 	"github.com/rs/zerolog/log"
-	"net/http"
 )
 
 // AuthMiddleware

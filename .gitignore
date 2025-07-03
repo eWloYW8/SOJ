@@ -14,3 +14,5 @@ soj.db
 
 subsystems/slurm
 .DS_Store
+
+compose.yml

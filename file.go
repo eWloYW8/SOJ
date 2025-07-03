@@ -45,6 +45,8 @@ func SftpHandler(sess ssh.Session) {
 
 	ip := GetContainerIP(id)
 
+	log.Printf("ip: %s, %s", ip, "try to connect to container")
+
 	conn, err := net.DialTCP("tcp", nil, net.TCPAddrFromAddrPort(netip.MustParseAddrPort(ip+":2207")))
 	if err != nil {
 		log.Println(name, "failed to connect to container", id, err)
