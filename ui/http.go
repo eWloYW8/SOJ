@@ -1,17 +1,28 @@
-package main
+package ui
 
 import (
+	"net/http"
 	"strconv"
 
-	"net/http"
-
 	"github.com/gin-gonic/gin"
+	"github.com/mrhaoxx/SOJ/types"
 	"github.com/rs/zerolog/log"
 )
 
-// AuthMiddleware
-// checks if the user is authenticated by identifying user's unique token
-func AuthMiddleware() gin.HandlerFunc {
+// HTTPServer HTTP服务器
+type HTTPServer struct {
+	dbService *types.DatabaseService
+}
+
+// NewHTTPServer 创建新的HTTP服务器
+func NewHTTPServer(dbService *types.DatabaseService) *HTTPServer {
+	return &HTTPServer{
+		dbService: dbService,
+	}
+}
+
+// AuthMiddleware 认证中间件
+func (s *HTTPServer) AuthMiddleware() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		token, err := c.Cookie("token")
 		if err != nil {
@@ -24,8 +35,8 @@ func AuthMiddleware() gin.HandlerFunc {
 			return
 		}
 
-		var user User
-		if err := db.Where("token = ?", token).First(&user).Error; err != nil {
+		user, err := s.dbService.GetUserByToken(token)
+		if err != nil {
 			c.JSON(http.StatusUnauthorized, gin.H{
 				"code":    0,
 				"message": "Invalid Token",
@@ -37,16 +48,14 @@ func AuthMiddleware() gin.HandlerFunc {
 
 		// Save the user in the context
 		c.Set("user", user.ID)
-		c.Set("is_admin", IsAdmin(user.ID))
+		c.Set("is_admin", s.dbService.IsAdmin(user.ID))
 
 		c.Next()
 	}
 }
 
-// listSubmits
-// list submits with limited information
-// does not need to be authenticated
-func listSubmits(c *gin.Context) {
+// listSubmits 列出提交
+func (s *HTTPServer) listSubmits(c *gin.Context) {
 	page, err := strconv.Atoi(c.DefaultQuery("page", "1"))
 	if err != nil || page <= 0 {
 		c.JSON(400, gin.H{
@@ -62,13 +71,15 @@ func listSubmits(c *gin.Context) {
 		return
 	}
 
-	var submits []SubmitCtx
-	var total int64
-	db.Select("id", "user", "problem", "submit_time", "status", "msg", "judge_result").
-		Order("submit_time desc").
-		Offset((page - 1) * limit).Limit(limit).
-		Find(&submits)
-	db.Model(&SubmitCtx{}).Count(&total)
+	submits, total, err := s.dbService.GetSubmitsForAPI(page, limit)
+	if err != nil {
+		c.JSON(500, gin.H{
+			"code":    1,
+			"message": "Database error",
+			"data":    nil,
+		})
+		return
+	}
 
 	admin, _ := c.Get("is_admin")
 	user, _ := c.Get("user")
@@ -90,11 +101,10 @@ func listSubmits(c *gin.Context) {
 	})
 }
 
-// getSubmitDetail
-// return the whole row of a submit in database, including workflow
-func getSubmitDetail(c *gin.Context) {
-	id, err := strconv.Atoi(c.Param("id"))
-	if err != nil {
+// getSubmitDetail 获取提交详情
+func (s *HTTPServer) getSubmitDetail(c *gin.Context) {
+	id := c.Param("id")
+	if id == "" {
 		c.JSON(http.StatusBadRequest, gin.H{
 			"code":    1,
 			"message": "Invalid parameter",
@@ -103,10 +113,8 @@ func getSubmitDetail(c *gin.Context) {
 		return
 	}
 
-	submit := SubmitCtx{}
-	if err := db.
-		Where("id = ?", id).
-		First(&submit).Error; err != nil {
+	submit, err := s.dbService.GetSubmitByID(id)
+	if err != nil {
 		c.JSON(http.StatusNotFound, gin.H{
 			"code":    1,
 			"message": "Submit not found",
@@ -134,12 +142,17 @@ func getSubmitDetail(c *gin.Context) {
 	return
 }
 
-// listRank
-// list rank of users
-func listRank(c *gin.Context) {
-	var users []User
-	db.Order("total_score desc").
-		Find(&users)
+// listRank 排行榜
+func (s *HTTPServer) listRank(c *gin.Context) {
+	users, err := s.dbService.GetAllUsersOrderedByScore()
+	if err != nil {
+		c.JSON(500, gin.H{
+			"code":    1,
+			"message": "Database error",
+			"data":    nil,
+		})
+		return
+	}
 
 	c.JSON(200, gin.H{
 		"code":    0,
@@ -148,12 +161,18 @@ func listRank(c *gin.Context) {
 	})
 }
 
-// getUserSummary
-func getUserSummary(c *gin.Context) {
+// getUserSummary 获取用户摘要
+func (s *HTTPServer) getUserSummary(c *gin.Context) {
 	id, _ := c.Get("user")
-	var user User
-	db.Where("id = ?", id.(string)).
-		First(&user)
+	user, err := s.dbService.GetUserByID(id.(string))
+	if err != nil {
+		c.JSON(500, gin.H{
+			"code":    1,
+			"message": "Database error",
+			"data":    nil,
+		})
+		return
+	}
 
 	c.JSON(200, gin.H{
 		"code":    0,
@@ -163,7 +182,8 @@ func getUserSummary(c *gin.Context) {
 	return
 }
 
-func serveHTTP(addr string) {
+// ServeHTTP 启动HTTP服务器
+func (s *HTTPServer) ServeHTTP(addr string) {
 	gin.SetMode(gin.ReleaseMode)
 	router := gin.Default()
 	err := router.SetTrustedProxies([]string{"127.0.0.1"})
@@ -172,11 +192,11 @@ func serveHTTP(addr string) {
 		return
 	}
 
-	auth := router.Group("/api/v1", AuthMiddleware())
-	auth.GET("rank", listRank)
-	auth.GET("list", listSubmits)
-	auth.GET("my", getUserSummary)
-	auth.GET("status/:id", getSubmitDetail)
+	auth := router.Group("/api/v1", s.AuthMiddleware())
+	auth.GET("rank", s.listRank)
+	auth.GET("list", s.listSubmits)
+	auth.GET("my", s.getUserSummary)
+	auth.GET("status/:id", s.getSubmitDetail)
 
 	go func() {
 		log.Info().Str("addr", addr).Msg("HTTP server started")

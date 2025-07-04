@@ -1,23 +1,34 @@
-package main
+package file_transfer
 
 import (
 	"bytes"
 	"context"
 	"io"
-
 	"time"
 
 	"github.com/docker/docker/api/types/container"
 	"github.com/docker/docker/api/types/mount"
 	"github.com/docker/docker/client"
 	"github.com/docker/docker/pkg/stdcopy"
-
 	"github.com/rs/zerolog/log"
 )
 
-var docker_cli *client.Client
+// DockerService Docker容器服务
+type DockerService struct {
+	client *client.Client
+}
 
-func RunImage(name string, user string, hostname string, image string, workdir string, mounts []mount.Mount, mask bool, ReadonlyRootfs bool, networkdisabled bool, timeout int, networkhosted bool, env []string) (ok bool, id string) {
+// NewDockerService 创建新的Docker服务
+func NewDockerService() (*DockerService, error) {
+	cli, err := client.NewClientWithOpts(client.FromEnv)
+	if err != nil {
+		return nil, err
+	}
+	return &DockerService{client: cli}, nil
+}
+
+// RunImage 运行Docker镜像
+func (ds *DockerService) RunImage(name string, user string, hostname string, image string, workdir string, mounts []mount.Mount, mask bool, ReadonlyRootfs bool, networkdisabled bool, timeout int, networkhosted bool, env []string) (ok bool, id string) {
 
 	var masked []string
 	if mask {
@@ -29,7 +40,7 @@ func RunImage(name string, user string, hostname string, image string, workdir s
 		network = "host"
 	}
 
-	resp, err := docker_cli.ContainerCreate(context.Background(), &container.Config{
+	resp, err := ds.client.ContainerCreate(context.Background(), &container.Config{
 		Image:           image,
 		User:            user,
 		Hostname:        hostname,
@@ -50,7 +61,6 @@ func RunImage(name string, user string, hostname string, image string, workdir s
 	}, nil, nil, name)
 
 	if err != nil {
-		// log.Println(name, "container create error", err)
 		log.Err(err).Str("name", name).Str("image", image).Msg("container create error")
 		return false, ""
 	}
@@ -59,7 +69,7 @@ func RunImage(name string, user string, hostname string, image string, workdir s
 
 	log.Debug().Str("name", name).Str("image", image).Str("id", id).Msg("container created")
 
-	err = docker_cli.ContainerStart(context.Background(), id, container.StartOptions{})
+	err = ds.client.ContainerStart(context.Background(), id, container.StartOptions{})
 
 	if err != nil {
 		log.Err(err).Str("name", name).Str("image", image).Str("id", id).Msg("container start error")
@@ -71,10 +81,10 @@ func RunImage(name string, user string, hostname string, image string, workdir s
 	return true, id
 }
 
-func CleanContainer(id string) {
+// CleanContainer 清理容器
+func (ds *DockerService) CleanContainer(id string) {
 	var timeout = 1
-	err := docker_cli.ContainerStop(context.Background(), id, container.StopOptions{Timeout: &timeout})
-	// err := docker_cli.ContainerRemove(context.Background(), id, container.RemoveOptions{Force: true, RemoveVolumes: true})
+	err := ds.client.ContainerStop(context.Background(), id, container.StopOptions{Timeout: &timeout})
 	if err != nil {
 		log.Err(err).Str("id", id).Msg("container remove error")
 		return
@@ -82,8 +92,9 @@ func CleanContainer(id string) {
 	log.Debug().Str("id", id).Msg("container removed")
 }
 
-func GetContainerIP(id string) string {
-	info, err := docker_cli.ContainerInspect(context.Background(), id)
+// GetContainerIP 获取容器IP
+func (ds *DockerService) GetContainerIP(id string) string {
+	info, err := ds.client.ContainerInspect(context.Background(), id)
 	if err != nil {
 		log.Err(err).Str("id", id).Msg("failed to get ip: container inspect error")
 		return ""
@@ -92,11 +103,12 @@ func GetContainerIP(id string) string {
 	return info.NetworkSettings.IPAddress
 }
 
-func ExecContainer(id string, cmd string, timeout int, stdout, stderr io.Writer, env []string, privileged bool) (int, string, error) {
+// ExecContainer 在容器中执行命令
+func (ds *DockerService) ExecContainer(id string, cmd string, timeout int, stdout, stderr io.Writer, env []string, privileged bool) (int, string, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(timeout)*time.Second)
 	defer cancel()
 
-	resp, err := docker_cli.ContainerExecCreate(ctx, id, container.ExecOptions{
+	resp, err := ds.client.ContainerExecCreate(ctx, id, container.ExecOptions{
 		AttachStdout: true,
 		AttachStderr: true,
 		Cmd:          []string{"sh", "-c", cmd},
@@ -111,7 +123,7 @@ func ExecContainer(id string, cmd string, timeout int, stdout, stderr io.Writer,
 
 	log.Debug().Str("id", id).Str("exec_id", resp.ID).Msg("container exec created")
 
-	outresp, err := docker_cli.ContainerExecAttach(ctx, resp.ID, container.ExecStartOptions{})
+	outresp, err := ds.client.ContainerExecAttach(ctx, resp.ID, container.ExecStartOptions{})
 	if err != nil {
 		log.Err(err).Str("id", id).Str("exec_id", resp.ID).Msg("container exec attach error")
 		return -1, "", err
@@ -133,7 +145,7 @@ func ExecContainer(id string, cmd string, timeout int, stdout, stderr io.Writer,
 		}
 	}
 
-	inspectResp, err := docker_cli.ContainerExecInspect(ctx, resp.ID)
+	inspectResp, err := ds.client.ContainerExecInspect(ctx, resp.ID)
 	if err != nil {
 		log.Err(err).Str("id", id).Str("exec_id", resp.ID).Msg("container exec inspect error")
 		return -1, "", err
@@ -142,8 +154,9 @@ func ExecContainer(id string, cmd string, timeout int, stdout, stderr io.Writer,
 	return inspectResp.ExitCode, buf.String(), err
 }
 
-func GetContainerLogs(id string) (string, error) {
-	resp, err := docker_cli.ContainerLogs(context.Background(), id, container.LogsOptions{
+// GetContainerLogs 获取容器日志
+func (ds *DockerService) GetContainerLogs(id string) (string, error) {
+	resp, err := ds.client.ContainerLogs(context.Background(), id, container.LogsOptions{
 		ShowStdout: true,
 		ShowStderr: true,
 	})

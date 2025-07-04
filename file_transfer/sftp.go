@@ -1,4 +1,4 @@
-package main
+package file_transfer
 
 import (
 	"io"
@@ -12,10 +12,11 @@ import (
 
 	"github.com/docker/docker/api/types/mount"
 	ssh "github.com/gliderlabs/ssh"
+	"github.com/mrhaoxx/SOJ/types"
 )
 
 // SftpHandler handler for SFTP subsystem
-func SftpHandler(sess ssh.Session) {
+func SftpHandler(sess ssh.Session, cfg *types.Config, dockerService *DockerService) {
 	name := "soj-subsystem-sftp-" + sess.User() + "-" + time.Now().Format("20060102150405")
 	path := cfg.SubmitsDir + "/" + sess.User()
 	log.Println("new sftp session", sess.User(), name, path)
@@ -27,7 +28,7 @@ func SftpHandler(sess ssh.Session) {
 
 	os.Chown(path, cfg.SubmitUid, cfg.SubmitGid)
 
-	success, id := RunImage(name, strconv.Itoa(cfg.SubmitUid), "soj-sftpd", "docker.io/mrhaoxx/soj-subsystem-sftp", "/", []mount.Mount{
+	success, id := dockerService.RunImage(name, strconv.Itoa(cfg.SubmitUid), "soj-sftpd", "docker.io/mrhaoxx/soj-subsystem-sftp", "/", []mount.Mount{
 		{
 			Type:   mount.TypeBind,
 			Source: path,
@@ -39,11 +40,11 @@ func SftpHandler(sess ssh.Session) {
 		log.Println(name, "failed to run sftp container")
 		return
 	}
-	// defer CleanContainer(id)
+	// defer dockerService.CleanContainer(id)
 
 	// time.Sleep(500 * time.Millisecond)
 
-	ip := GetContainerIP(id)
+	ip := dockerService.GetContainerIP(id)
 
 	log.Printf("ip: %s, %s", ip, "try to connect to container")
 
