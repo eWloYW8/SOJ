@@ -103,16 +103,16 @@ type SubmitCtx struct {
 	Status string `json:"status"`
 	Msg    string `json:"message"`
 
-	SubmitDir       string          `gorm:"-" json:"-"`
+	SubmitDir       string          `json:"-"`
 	SubmitsHashes   SubmitsHashes   `json:"submits_hashes"`
-	Workdir         string          `gorm:"-" json:"-"`
+	Workdir         string          `json:"-"`
 	WorkflowResults WorkflowResults `json:"workflow_results"`
 	JudgeResult     JudgeResult     `json:"judge_result"`
 
-	RealWorkdir string `gorm:"-" json:"-"`
+	RealWorkdir string `json:"-"`
 
 	Running  chan struct{} `gorm:"-" json:"-"`
-	Userface Userface      `gorm:"-" json:"-"`
+	Userface Userface      `json:"-"`
 }
 
 func (ctx *SubmitCtx) SetStatus(status string) *SubmitCtx {
@@ -204,6 +204,8 @@ func ColorizeStatus(status string) aurora.Value {
 	switch status {
 	case "init":
 		return aurora.Gray(10, status)
+	case "pending":
+		return aurora.Cyan(status)
 	case "prep_dirs":
 		return aurora.Yellow(status)
 	case "prep_files":

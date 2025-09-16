@@ -211,7 +211,7 @@ func (ds *DatabaseService) GetSubmitsByUser(userID string, page, limit int) ([]S
 
 	// 获取分页数据
 	result := ds.db.Where("user = ?", userID).
-		Order("submit_time desc").
+		Order("id desc").
 		Offset((page - 1) * limit).
 		Limit(limit).
 		Find(&submits)
@@ -228,7 +228,7 @@ func (ds *DatabaseService) GetAllSubmits(page, limit int) ([]SubmitCtx, int64, e
 	ds.db.Model(&SubmitCtx{}).Count(&total)
 
 	// 获取分页数据
-	result := ds.db.Order("submit_time desc").
+	result := ds.db.Order("id desc").
 		Offset((page - 1) * limit).
 		Limit(limit).
 		Find(&submits)
@@ -246,7 +246,7 @@ func (ds *DatabaseService) GetSubmitsForAPI(page, limit int) ([]SubmitCtx, int64
 
 	// 获取分页数据，只选择需要的字段
 	result := ds.db.Select("id", "user", "problem", "submit_time", "status", "msg", "judge_result").
-		Order("submit_time desc").
+		Order("id desc").
 		Offset((page - 1) * limit).
 		Limit(limit).
 		Find(&submits)
@@ -257,7 +257,7 @@ func (ds *DatabaseService) GetSubmitsForAPI(page, limit int) ([]SubmitCtx, int64
 // FindSubmitsByUserAndPattern 根据用户和模式查找提交（用于模糊搜索）
 func (ds *DatabaseService) FindSubmitsByUserAndPattern(userID, pattern string) (*SubmitCtx, error) {
 	var submit SubmitCtx
-	result := ds.db.Order("submit_time desc").
+	result := ds.db.Order("id desc").
 		Where("id LIKE ? AND user = ?", "%"+pattern+"%", userID).
 		First(&submit)
 	if result.Error != nil {
@@ -280,10 +280,125 @@ func (ds *DatabaseService) GetUserSubmitCount(userID string) (int64, error) {
 	return count, result.Error
 }
 
+// HasUserRunningSubmit 检查用户是否有运行中的提交
+func (ds *DatabaseService) HasUserRunningSubmit(userID string) (bool, error) {
+	var count int64
+	result := ds.db.Model(&SubmitCtx{}).
+		Where("user = ? AND status != ? AND status != ? AND status != ?", userID, "completed", "failed", "dead").
+		Count(&count)
+	if result.Error != nil {
+		return false, result.Error
+	}
+	return count > 0, nil
+}
+
+// GetUserRunningSubmit 获取用户当前运行中的提交
+func (ds *DatabaseService) GetUserRunningSubmit(userID string) (*SubmitCtx, error) {
+	var submit SubmitCtx
+	result := ds.db.Where("user = ? AND status != ? AND status != ? AND status != ?", userID, "completed", "failed", "dead").
+		Order("id desc").
+		First(&submit)
+	if result.Error != nil {
+		return nil, result.Error
+	}
+	return &submit, nil
+}
+
 // DeleteOldSubmits 删除旧的提交记录（可选功能）
 func (ds *DatabaseService) DeleteOldSubmits(beforeTime time.Time) error {
 	result := ds.db.Where("submit_time < ?", beforeTime.UnixNano()).Delete(&SubmitCtx{})
 	return result.Error
+}
+
+// DeleteSubmitByID 删除指定ID的提交记录（简单版本，不重新计算权重）
+func (ds *DatabaseService) DeleteSubmitByID(submitID string) error {
+	result := ds.db.Where("id = ?", submitID).Delete(&SubmitCtx{})
+	return result.Error
+}
+
+// DeleteSubmitByIDWithProblems 删除指定ID的提交记录并更新用户加权分数
+func (ds *DatabaseService) DeleteSubmitByIDWithProblems(submitID string, problems map[string]Problem) error {
+	// 先获取要删除的提交记录信息
+	submit, err := ds.GetSubmitByID(submitID)
+	if err != nil {
+		return err
+	}
+
+	// 删除提交记录
+	result := ds.db.Where("id = ?", submitID).Delete(&SubmitCtx{})
+	if result.Error != nil {
+		return result.Error
+	}
+
+	// 重新计算受影响用户的最佳记录（包含权重计算）
+	return ds.RecalculateUserBestScoresWithProblems(submit.User, problems)
+}
+
+// RecalculateUserBestScoresWithProblems 重新计算用户的最佳分数和提交记录（包含权重）
+func (ds *DatabaseService) RecalculateUserBestScoresWithProblems(userID string, problems map[string]Problem) error {
+	// 获取用户
+	user, err := ds.GetUserByID(userID)
+	if err != nil {
+		return err
+	}
+
+	// 重置用户的最佳记录
+	user.BestScores = make(map[string]float64)
+	user.BestSubmits = make(map[string]string)
+	user.BestSubmitDate = make(map[string]int64)
+
+	// 获取用户的所有完成的提交
+	var submits []SubmitCtx
+	ds.db.Where("user = ? AND status = ?", userID, "completed").Find(&submits)
+
+	// 重新计算每个问题的最佳分数
+	for _, submit := range submits {
+		if submit.JudgeResult.Success {
+			problemID := submit.Problem
+			problem, exists := problems[problemID]
+			if !exists {
+				continue // 跳过不存在的问题
+			}
+
+			weightedScore := submit.JudgeResult.Score * problem.Weight
+			currentBest, exists := user.BestScores[problemID]
+
+			if !exists || weightedScore > currentBest {
+				user.BestScores[problemID] = weightedScore
+				user.BestSubmits[problemID] = submit.ID
+				user.BestSubmitDate[problemID] = submit.SubmitTime
+			}
+		}
+	}
+
+	user.CalculateTotalScore()
+
+	// 保存更新后的用户记录
+	return ds.UpdateUser(user)
+}
+
+// ModifySubmissionResult 修改提交结果并更新用户记录
+func (ds *DatabaseService) ModifySubmissionResult(submitID string, score float64, message string, problems map[string]Problem) error {
+	// 获取提交记录
+	submit, err := ds.GetSubmitByID(submitID)
+	if err != nil {
+		return err
+	}
+
+	// 更新提交结果
+	submit.JudgeResult.Score = score
+	submit.JudgeResult.Success = score > 0
+	submit.Msg = message
+	submit.Status = "completed"
+
+	// 保存更新后的提交记录
+	err = ds.UpdateSubmit(submit)
+	if err != nil {
+		return err
+	}
+
+	// 重新计算用户的最佳分数
+	return ds.RecalculateUserBestScoresWithProblems(submit.User, problems)
 }
 
 // GetSubmitStatistics 获取提交统计信息

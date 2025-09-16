@@ -138,6 +138,30 @@ func handleSubmit(s ssh.Session, cfg *types.Config, evaluator *judge.Evaluator, 
 		return
 	}
 
+	// 检查用户是否已有运行中的提交
+	hasRunning, err := dbService.HasUserRunningSubmit(s.User())
+	if err != nil {
+		uf.Println(aurora.Red("error:"), "failed to check running submissions:", err)
+		log.Error().Err(err).Str("user", s.User()).Msg("failed to check running submissions")
+		return
+	}
+
+	if hasRunning {
+		runningSubmit, err := dbService.GetUserRunningSubmit(s.User())
+		if err != nil {
+			uf.Println(aurora.Red("error:"), "failed to get running submission details:", err)
+			log.Error().Err(err).Str("user", s.User()).Msg("failed to get running submission details")
+			return
+		}
+		uf.Println(aurora.Red("error:"), "you have a running submission")
+		uf.Println("	Running submit:", aurora.Magenta(runningSubmit.ID))
+		uf.Println("	Problem:", aurora.Bold(runningSubmit.Problem))
+		uf.Println("	Status:", types.ColorizeStatus(runningSubmit.Status))
+		uf.Println("	Started:", aurora.Yellow(time.Unix(0, runningSubmit.SubmitTime).Format(time.DateTime+" MST")))
+		uf.Println("Please wait for the current submission to finish before submitting again.")
+		return
+	}
+
 	uf.Println(aurora.Green("Submitting"), aurora.Bold(pid))
 	subtime := time.Now()
 
@@ -173,7 +197,7 @@ func handleSubmit(s ssh.Session, cfg *types.Config, evaluator *judge.Evaluator, 
 	writeResult(uf, ctx)
 
 	// 更新用户数据
-	err := dbService.UpdateUserSubmitResult(s.User(), &ctx, &pb)
+	err = dbService.UpdateUserSubmitResult(s.User(), &ctx, &pb)
 	if err != nil {
 		log.Error().Err(err).Str("user", s.User()).Msg("failed to update user submit result")
 	}

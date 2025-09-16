@@ -49,19 +49,25 @@ func NewEvaluator(cfg *types.Config, docker DockerInterface, dbService *types.Da
 func (e *Evaluator) RunJudge(ctx *types.SubmitCtx, problem *types.Problem) {
 	log.Debug().Timestamp().Str("id", ctx.ID).Str("user", ctx.User).Str("problem", ctx.Problem).Msg("run judge")
 
-	var start_time = time.Now()
+	// var start_time = time.Now()
 	var err error
 
 	defer func() {
 		log.Debug().Timestamp().Str("id", ctx.ID).Str("status", ctx.Status).Str("judgemsg", ctx.Msg).AnErr("err", err).Msg("judge finished")
-		ctx.Userface.Println(types.GetTime(start_time), "Submission", types.ColorizeStatus(ctx.Status))
+		ctx.Userface.Println(types.GetTime(time.Now()), "Submission", types.ColorizeStatus(ctx.Status))
 		close(ctx.Running)
 		e.dbService.UpdateSubmit(ctx)
 	}()
 
 	ctx.Userface.Println("Submission ID:", aurora.Magenta(ctx.ID))
 
-	ctx.SetStatus("prep_dirs")
+	// 首先设置为pending状态，等待资源准备
+	ctx.SetStatus("pending").SetMsg("submission is pending, waiting for judge resources")
+	e.dbService.UpdateSubmit(ctx)
+	ctx.Userface.Println(types.GetTime(time.Now()), "Submission", types.ColorizeStatus(ctx.Status))
+
+	// 开始准备评测环境
+	ctx.SetStatus("prep_dirs").SetMsg("preparing working directories")
 	e.dbService.UpdateSubmit(ctx)
 
 	var submits_dir = path.Join(ctx.Workdir, "submits")
@@ -95,6 +101,22 @@ func (e *Evaluator) RunJudge(ctx *types.SubmitCtx, problem *types.Problem) {
 		goto workdir_creation_failed
 	}
 
+	defer func() {
+		log.Debug().Timestamp().Str("id", ctx.ID).Msg("epilog: chowning workdir to root")
+		err = os.Chown(ctx.Workdir, 0, 0)
+		if err != nil {
+			log.Error().Timestamp().Str("id", ctx.ID).AnErr("err", err).Msg("epilog: failed to chown workdir to root")
+		}
+		err = os.Chown(submits_dir, 0, 0)
+		if err != nil {
+			log.Error().Timestamp().Str("id", ctx.ID).AnErr("err", err).Msg("epilog: failed to chown submits_dir to root")
+		}
+		err = os.Chown(workflow_dir, 0, 0)
+		if err != nil {
+			log.Error().Timestamp().Str("id", ctx.ID).AnErr("err", err).Msg("epilog: failed to chown workflow_dir to root")
+		}
+	}()
+
 	goto workdir_created
 
 workdir_creation_failed:
@@ -105,9 +127,9 @@ workdir_creation_failed:
 workdir_created:
 	log.Debug().Timestamp().Str("id", ctx.ID).Str("submit_workdir", ctx.Workdir).Msg("created working dirs")
 
-	ctx.Userface.Println(types.GetTime(start_time), "Submitting files")
+	ctx.Userface.Println(types.GetTime(time.Now()), "Submitting files")
 
-	ctx.SetStatus("prep_files")
+	ctx.SetStatus("prep_files").SetMsg("preparing files")
 	e.dbService.UpdateSubmit(ctx)
 
 	for _, submit := range problem.Submits {
@@ -144,9 +166,9 @@ workdir_created:
 
 	log.Debug().Timestamp().Str("id", ctx.ID).Msg("copied submit files")
 
-	ctx.Userface.Println(types.GetTime(start_time), "Running Judge workflows")
+	ctx.Userface.Println(types.GetTime(time.Now()), "Running Judge workflows")
 
-	ctx.SetStatus("run_workflow")
+	ctx.SetStatus("run_workflow").SetMsg("running judge workflows")
 	e.dbService.UpdateSubmit(ctx)
 
 	for idx, workflow := range problem.Workflow {
@@ -186,7 +208,7 @@ workdir_created:
 
 		ctx.SetStatus("run_workflow-" + strconv.Itoa(idx))
 		e.dbService.UpdateSubmit(ctx)
-		ctx.Userface.Println(types.GetTime(start_time), "running", "workflow", strconv.Itoa(idx+1), "/", len(problem.Workflow))
+		ctx.Userface.Println(types.GetTime(time.Now()), "running", "workflow", strconv.Itoa(idx+1), "/", len(problem.Workflow))
 
 		stepshows := map[int]struct{}{}
 		stepprivillege := map[int]struct{}{}
@@ -219,7 +241,7 @@ workdir_created:
 			ctx.SetStatus("run_workflow-" + strconv.Itoa(idx) + "_" + strconv.Itoa(sidx))
 			e.dbService.UpdateSubmit(ctx)
 
-			ctx.Userface.Println(types.GetTime(start_time), "running", "workflow", strconv.Itoa(idx+1), "step", strconv.Itoa(sidx+1), "/", len(workflow.Steps))
+			ctx.Userface.Println(types.GetTime(time.Now()), "running", "workflow", strconv.Itoa(idx+1), "step", strconv.Itoa(sidx+1), "/", len(workflow.Steps))
 
 			_, ok := stepshows[sidx+1]
 			_, priv := stepprivillege[sidx+1]

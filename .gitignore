@@ -16,3 +16,5 @@ subsystems/slurm
 .DS_Store
 
 compose.yml
+
+subsystems/2025-*
